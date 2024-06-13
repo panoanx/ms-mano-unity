@@ -1,0 +1,922 @@
+diff --git Assets/Kinesis/Demo/Scripts/Components/CameraController.cs Assets/Kinesis/Demo/Scripts/Components/CameraController.cs
+index 1e0648b..4ce63d1 100755
+--- Assets/Kinesis/Demo/Scripts/Components/CameraController.cs
++++ Assets/Kinesis/Demo/Scripts/Components/CameraController.cs
+@@ -1,6 +1,7 @@
+ ﻿using UnityEditor;
+ using UnityEngine;
+ 
++#if UNITY_EDITOR
+ namespace Kinesis.Demo {
+     public class CameraController : MonoBehaviour {
+         [Tooltip("Start Play Mode in Scene view.")]
+@@ -128,4 +129,5 @@ namespace Kinesis.Demo {
+             this.transform.Translate(direction * this.moveSpeed * Time.deltaTime);
+         }
+     }
+-}
+\ No newline at end of file
++}
++#endif
+\ No newline at end of file
+diff --git Assets/Kinesis/Demo/Scripts/Components/JointPID.cs Assets/Kinesis/Demo/Scripts/Components/JointPID.cs
+new file mode 100755
+index 0000000..fa6f774
+--- /dev/null
++++ Assets/Kinesis/Demo/Scripts/Components/JointPID.cs
+@@ -0,0 +1,187 @@
++using UnityEditor;
++using UnityEngine;
++
++
++
++
++namespace Kinesis.Demo
++{
++    public class JointPID
++    {
++        public int id;
++        public Transform transform;
++        public CharacterJoint joint;
++        // public float Kp = 1f, Ki = 0f, Kd = 0f, Kswing1Axisdd = 0f;
++        public float stiffness = 5e-1f, damping = 5e-2f, scaling = 5e-4f;
++        public Quaternion local2joint, joint2local;
++        public Rigidbody rigidbody;
++        // private Vector3 P, I, D, DD;
++        public float mass = 1f;
++        private float timestamp = 0f;
++        // private Vector3 prevError = new Vector3(0, 0, 0);
++        // private Vector3 prevD = new Vector3(0, 0, 0);
++
++        public Vector3 lowerLimit = new Vector3(0, 0, 0);
++        public Vector3 twistAxis, swing1Axis, swing2Axis;
++        public Vector3 upperLimit = new Vector3(0, 0, 0);
++        public Vector3 targetJointRotEuler = new Vector3(0, 0, 0);
++        public Vector3 targetLocalVel = new Vector3(0, 0, 0); // angular Velocity
++                                                              // public Vector3 targetPosition = new Vector3(0, 0, 0);
++
++        // for debugging
++        public Vector3 jointRotEuler, localVel, targetJointBiasEuler;
++        public float[] maxUpper = new float[3];
++        public float angleX, angleY;
++
++        static Quaternion projectQuatByAxis(Quaternion q, Vector3 axis)
++        {
++            Vector3 v = new Vector3(q.x, q.y, q.z);
++            Vector3 p = Vector3.Project(v, axis);
++            Quaternion qp = new Quaternion(p.x, p.y, p.z, q.w);
++            return qp;
++            // Vector3 ax; float angle;
++            // qp.ToAngleAxis(out angle, out ax);
++            // return angle;
++        }
++        
++        // rotation -> swing/twist angles
++        public Vector3 DecomposeSwingTwist(Quaternion localRotation)
++        {
++            Quaternion qTwist = projectQuatByAxis(localRotation, twistAxis);
++            Quaternion qSwing = localRotation * Quaternion.Inverse(qTwist);
++            Quaternion qSwing1 = projectQuatByAxis(qSwing, swing1Axis);
++            Quaternion qSwing2 = qSwing * Quaternion.Inverse(qSwing1);
++            float angleTwist, angleSwing1, angleSwing2;
++            Vector3 _twistAxis, _swing1Axis, _swing2Axis;
++            qTwist.ToAngleAxis(out angleTwist, out _twistAxis);
++            qSwing1.ToAngleAxis(out angleSwing1, out _swing1Axis);
++            qSwing2.ToAngleAxis(out angleSwing2, out _swing2Axis);
++            Vector3 angles = new Vector3(angleTwist, angleSwing1, angleSwing2);
++            return angles;
++        }
++
++        // swing/twist angles -> rotation
++        public Quaternion ComposeSwingTwist(Vector3 angles)
++        {
++            Quaternion q = Quaternion.AngleAxis(angles[0], twistAxis);
++            q = Quaternion.AngleAxis(angles[1], swing1Axis) * q;
++            q = Quaternion.AngleAxis(angles[2], swing2Axis) * q; 
++            return q;
++        }
++
++        /// <summary>
++        /// Converts a regularized vector to a bias vector based on the upper and lower limits.
++        /// </summary>
++        /// <param name="reg">The regularized vector to convert.</param>
++        /// <returns>The bias vector.</returns>
++        public Vector3 Reg2Bias(Vector3 reg)
++        {
++            Vector3 bias = new Vector3();
++
++            for (int i = 0; i < 3; i++)
++            {
++                if (upperLimit[i] - lowerLimit[i] == 0)
++                    bias[i] = 0;
++                else
++                    bias[i] = (reg[i] + 1) / 2 * (upperLimit[i] - lowerLimit[i]) + lowerLimit[i];
++            }
++
++            return bias;
++        }
++
++        public Vector3 Bias2Reg(Vector3 bias)
++        {
++            Vector3 reg = new Vector3();
++            for (int i = 0; i < 3; i++)
++            {
++                if (upperLimit[i] - lowerLimit[i] == 0)
++                    reg[i] = 0;
++                else
++                    reg[i] = (bias[i] - lowerLimit[i]) / (upperLimit[i] - lowerLimit[i]) * 2 - 1;
++                if (Mathf.Abs(reg[i]) > 2)
++                    continue;
++            }
++
++
++            return reg; // [-1, 1]
++        }
++
++        /*  JointBias tracks the difference between the current joint rotation and the default joint rotation. */
++        public Vector3 JointBias2Rot(Vector3 jointBias)
++        {
++            Vector3 rot = (
++                    local2joint * Quaternion.Euler(targetJointBiasEuler)
++                ).eulerAngles;
++            for (int i = 0; i < 3; i++)
++                rot[i] = (rot[i] + 540) % 360 - 180;
++            return rot;
++        }
++
++        public Vector3 JointRot2Bias(Vector3 jointRot)
++        {
++            Vector3 bias = (
++                    Quaternion.Inverse(local2joint) * Quaternion.Euler(jointRot)
++                ).eulerAngles;
++            for (int i = 0; i < 3; i++)
++                bias[i] = (bias[i] + 540) % 360 - 180;
++            return bias;
++        }
++        public void SetTarget(Vector3 target, bool ifReg)
++        // The output of neural networks are between -1 and 1.
++        // This function maps the output of the network to
++        // the lower and upper limit of the joint.
++        // [-1, 1] -> [lower, upper]
++        {
++            // assert target[2] == 0; // We only use the 1 and 3 to control the joint
++            Vector3 prevTargetJointRotEuler = targetJointRotEuler;
++            if (ifReg == true)
++            {
++                targetJointBiasEuler = Reg2Bias(target);
++                targetJointRotEuler = JointBias2Rot(targetJointBiasEuler);
++                // Quaternion targetLocalRot = Quaternion.Euler(targetJointRotEuler) * Quaternion.Inverse(local2joint);
++            }
++            else
++            {
++                targetJointRotEuler = (
++                    Quaternion.Euler(target) * local2joint
++                ).eulerAngles;
++            }
++            float deltaTime = Time.time - timestamp;
++            timestamp = Time.time;
++
++            // prevent something like this: 350 - 10 = 340. Should be -20
++            Vector3 error = new Vector3(0, 0, 0);
++            for (int i = 0; i < 3; i++)
++            {
++                error[i] = (targetJointRotEuler[i] - prevTargetJointRotEuler[i] + 540) % 360;
++                error[i] -= 180;
++            }
++            Vector3 targetJointVel = (
++            // targetJointRot - prevTargetJointRot
++            error
++        ) / deltaTime;
++            targetJointVel = new Vector3(0, 0, 0);
++            targetLocalVel = local2joint * targetJointVel;
++        }
++
++        public Vector3 Drive(Quaternion localRot, Vector3 localVel)
++        {
++            Quaternion jointRot = localRot * local2joint;
++            this.jointRotEuler = jointRot.eulerAngles;
++            this.localVel = localVel;
++
++            Vector3 errorJointEuler = (
++                Quaternion.Inverse(jointRot) * Quaternion.Euler(targetJointRotEuler)
++            ).eulerAngles; // joint
++            for (int i = 0; i < 3; i++)
++                errorJointEuler[i] = errorJointEuler[i] > 180 ? errorJointEuler[i] - 360 : errorJointEuler[i];
++            Vector3 s = stiffness * errorJointEuler;
++            // Debug.Log(s);
++            s = local2joint * s; // joint -> local
++            Vector3 d = damping * (localVel - targetLocalVel); // local
++
++            // Debug.Log("s: " + s.ToString() + " d: " + d.ToString());
++            return (s - d) * scaling;
++        }
++    }
++}
+\ No newline at end of file
+diff --git Assets/Kinesis/Demo/Scripts/Components/JointPID.cs.meta Assets/Kinesis/Demo/Scripts/Components/JointPID.cs.meta
+new file mode 100755
+index 0000000..22791a2
+--- /dev/null
++++ Assets/Kinesis/Demo/Scripts/Components/JointPID.cs.meta
+@@ -0,0 +1,11 @@
++fileFormatVersion: 2
++guid: 1a62f08b929504af59bd89fb921baed7
++MonoImporter:
++  externalObjects: {}
++  serializedVersion: 2
++  defaultReferences: []
++  executionOrder: 0
++  icon: {instanceID: 0}
++  userData: 
++  assetBundleName: 
++  assetBundleVariant: 
+diff --git Assets/Kinesis/Demo/Scripts/Components/MuscleSimulation.cs Assets/Kinesis/Demo/Scripts/Components/MuscleSimulation.cs
+index 36e30d2..7a1d6fa 100755
+--- Assets/Kinesis/Demo/Scripts/Components/MuscleSimulation.cs
++++ Assets/Kinesis/Demo/Scripts/Components/MuscleSimulation.cs
+@@ -1,57 +1,491 @@
+-﻿using Kinesis.Components;
+-using Kinesis.Core;
++#define COLLECT_TORQUE
++using System;
+ using System.Collections.Generic;
++using System.Management.Instrumentation;
++using RFUniverse.Attributes;
++using Robotflow.RFUniverse;
+ using UnityEngine;
++using UnityEngine.Assertions;
++using Kinesis.Components;
++using Kinesis.Core;
++using System.Linq;
++using Robotflow.RFUniverse.SideChannels;
+ 
+-namespace Kinesis.Demo {
+-    public class MuscleSimulation : MonoBehaviour {
+-        public bool simulationOn = true;
+-        private Dictionary<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>> muscleJointTorquesMap;
+-        private Dictionary<MuscleTendonUnit, MuscleStimulator> muscleStimulatorMap;
+ 
+-        void FixedUpdate() {
+-            if (!this.simulationOn) {
+-                return;
+-            }
+ 
++namespace Kinesis.Demo
++{
++    public class MuscleSimulation : MonoBehaviour
++    {
++        public bool simulationOn = true;
++        private Dictionary<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>> muscleJointTorquesMap = null;
++#if UNITY_EDITOR
++        private Dictionary<MuscleTendonUnit, MuscleStimulator> muscleStimulatorMap = null;
++#endif
++        public GameObject muscle_prefab;
++        public GameObject current_character = null;
++        private List<String> observation_rigidbody_names = new List<string>();
++        public int myTag = 100;
++        public int muscleCount = 31;
++        public RigidbodyAttr[] rbAttrs = null;
++        private List<Vector3> saved_pos = new List<Vector3>();
++        private List<Quaternion> saved_q = new List<Quaternion>();
++        // public ArticulationGraph graph;
++        // private List<Quaternion> local2joints = new List<Quaternion>();
++        // [HideInInspector]
++        public List<JointPID> pids = new List<JointPID>();
++        // [HideInInspector]
++        // public List<Vector3> pdTargets = new List<Vector3>();
++        public List<Vector3> muscleSegmentTorques, pdJointTorques;
++        public List<Vector3> muscleJointTorques;
++        public int MODE = 0b00000000; 
++        int MUSCLE_MASK = 0b00000001;
++        int PD_MASK = 0b00000010;
++
++        public void excite_muscles(List<float> muscle_excitations)
++        {
++            int count = 0;
++            muscleJointTorques = new Vector3[this.pids.Count].ToList();
++            // if (muscle_excitations.Count != this.muscleJointTorquesMap.Count)
++            // {
++            //     Debug.LogError(string.Format("The number of muscle_excitations is {0}, but the real number of muscles is {1}", muscle_excitations.Count, this.muscleJointTorquesMap.Count));
++            //     return;
++            // }
++            this.muscleSegmentTorques = new List<Vector3>();
+             foreach (KeyValuePair<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>> kvp in
+-                this.muscleJointTorquesMap) {
++                    this.muscleJointTorquesMap)
++            {
+                 MuscleTendonUnit muscle = kvp.Key;
+                 Dictionary<MuscleSegment, Vector3> jointTorques = kvp.Value;
++                Dictionary<MuscleSegment, Vector3> normalizedJointTorques = new Dictionary<MuscleSegment, Vector3>();
+ 
++#if UNITY_EDITOR
+                 // Check for excitation signal from Muscle Stimulator component.
+                 MuscleStimulator muscleStimulator;
+                 this.muscleStimulatorMap.TryGetValue(muscle, out muscleStimulator);
+-                float excitation = (muscleStimulator != null) ? muscleStimulator.excitation : 0.0f;
++                // float excitation = (muscleStimulator != null) ? muscleStimulator.excitation : 0.0f;
++#endif
++                // Debug.Log(count);
++                float excitation = muscle_excitations[count % muscleCount];
++                try
++                {
++                    muscle.CalculateJointTorques(excitation, ref jointTorques, ref normalizedJointTorques);
++                    foreach (KeyValuePair<MuscleSegment, Vector3> kv in jointTorques)
++                    {
++                        Rigidbody targetRb = kv.Key.jointAnchorBody;
++                        Vector3 jointTorque = kv.Value;
++
++                        RigidbodyAttr rbAttr = targetRb.GetComponent<RigidbodyAttr>();
++                        if (!rbAttr) continue;
++                        int rbid = rbAttr.ID % 1000;
++                        // jointTorque = targetRb.transform.InverseTransformVector(jointTorque);
++                        muscleJointTorques[rbid - 1] += jointTorque;
++
++                        if ((this.MODE & MUSCLE_MASK) != 0)
++                            targetRb.AddRelativeTorque(jointTorque);
++                    }
++                    // MuscleTendonUnit.ApplyJointTorques(jointTorques);
++                }
++                catch (MuscleComponentLengthException e)
++                {
++
++                }
++#if COLLECT_TORQUE
++                // fill the jointTorques into muscleJointTorques
++                // muscleSegmentTorques.AddRange(jointTorques.Values.ToList());
++                muscleSegmentTorques.AddRange(normalizedJointTorques.Values.ToList());
++#endif
++                count++;
++            }
++            // Debug.Log(muscleSegmentTorques.Count);
++        }
++
++        // public static void SetGameObjectTag(GameObject gameObject, string tag)
++        // {
++        //     if (!UnityEditorInternal.InternalEditorUtility.tags.Equals(tag)) //如果tag列表中没有这个tag
++        //     {
++        //         UnityEditorInternal.InternalEditorUtility.AddTag(tag); //在tag列表中添加这个tag
++        //     }
++
++        //     gameObject.tag = tag;
++        // }
++
++        public Transform FindChildByRecursion(Transform aParent, string aName)
++        {
++            if (aParent == null) return null;
++            var result = aParent.Find(aName);
++            if (result != null)
++                return result;
++            foreach (Transform child in aParent)
++            {
++                result = FindChildByRecursion(child, aName);
++                if (result != null)
++                    return result;
++            }
++            return null;
++        }
++
++        public void ApplyPDTorque()
++        {
++            List<Vector3> _pdJointTorques = new List<Vector3>();
++            // float errorTotal = 0;
++            foreach (RigidbodyAttr rb_attr in this.rbAttrs)
++            {
++                int id = rb_attr.ID % 1000;
++                GameObject obj = rb_attr.gameObject;
++                // if (obj.name.Contains("pinky1"))
++                if (obj)
++                {
++                    // LocalRot = rot w.r.t. local frame, 
++                    // JointRot = rot w.r.t. joint frame
++                    // Vector3 targetDirection = obj.transform.position
++                    //     - new Vector3(myTag, 0, 0) - this.pids[id - 1].targetPosition;
++                    // Vector3 targetDirectionLocal = obj.transform.InverseTransformDirection(targetDirection).normalized;
++                    // Vector3 rotateDirection = Vector3.RotateTowards(
++                    //     obj.transform.localPosition.normalized, targetDirectionLocal, 360, 0.0f
++                    // ).normalized;
+ 
+-                muscle.CalculateJointTorques(excitation, ref jointTorques);
+-                MuscleTendonUnit.ApplyJointTorques(jointTorques);
++                    // Quaternion errorQ = this.pids[id - 1].Error(
++                    //     obj.transform.localRotation
++                    // // rotateDirection
++                    // );
++                    // errorTotal += Quaternion.Angle(errorQ, Quaternion.identity);
++                    // Vector3 torque = this.pids[id - 1].Drive(errorQ);
++
++                    Vector3 localAngularVelocity = obj.transform.InverseTransformDirection(rb_attr.Rigidbody.angularVelocity);
++                    //localAngularVelocity.x is the target's Pitch,
++                    //localAngularVelocity.y is the target's Yaw,
++                    //localAngularVelocity.z is the target's Roll,
++                    //assuming the target's forward is aligned with its z axis.
++
++                    Vector3 torque = this.pids[id - 1].Drive(
++                        Quaternion.Euler(obj.transform.localRotation.eulerAngles),
++                        localAngularVelocity
++                    );
++                    _pdJointTorques.Add(torque);
++
++                    // Debug.DrawRay(
++                    //     obj.transform.position,
++                    //     obj.transform.TransformVector(torque) * 10f,
++                    //     Color.red
++                    // );
++                    // Debug.DrawRay(
++                    //     obj.transform.position,
++                    //     obj.transform.TransformVector(// local to world
++                    //         this.pids[id - 1].local2joint.normalized * Vector3.forward * 0.02f
++                    //     ),
++                    //     Color.blue
++                    // );
++
++                    if ((this.MODE & PD_MASK) != 0)
++                        rb_attr.Rigidbody.AddRelativeTorque(torque);
++                    // rb_attr.Rigidbody.AddTorque(torque);
++                    // Debug.Log("Apply torque to " + obj.name + " " + torque);
++                }
+             }
++            this.pdJointTorques = _pdJointTorques;
++            // graph.AddFloat(errorTotal);
+         }
+ 
+-        void Awake() {
+-            Rigidbody[] rigidbodies = GameObject.FindObjectsOfType<Rigidbody>();
+-            foreach (Rigidbody rb in rigidbodies) {
++        private void Getlocal2joints()
++        {
++            foreach (var rb_attr in rbAttrs)
++            {
++                JointPID p = new JointPID();
++                p.id = rb_attr.ID % 1000;
++                CharacterJoint joint = rb_attr.GetComponent<CharacterJoint>();
++                Vector3 twistAxis = joint.axis.normalized; // x
++                Vector3 swing1Axis = joint.swingAxis.normalized; // y_
++                Vector3 swing2Axis = Vector3.Cross(twistAxis, swing1Axis); // z
++                swing1Axis = Vector3.Cross(swing2Axis, twistAxis); // y
++
++                // bool swing1Dof = joint.swing1Limit.limit != 0;
++                // bool swing2Dof = joint.swing2Limit.limit != 0;
++                // joint.enableProjection = true;
++                // p.isDof[1] = swing1Dof ? 1 : 0;
++                // p.isDof[2] = swing2Dof ? 1 : 0;
++
++                // rotation from (local) base frame to joint frame
++                Quaternion q = Quaternion.LookRotation(swing2Axis, swing1Axis);
++                // Quaternion q = Quaternion.LookRotation(swing1Axis, swing2Axis);
++                // Debug.DrawRay(
++                //     rb_attr.transform.position,
++                //     rb_attr.transform.TransformVector(// local to world
++                //             q.normalized * Vector3.forward * 0.02f
++                //     ),
++                //     Color.green
++                // );
++                p.twistAxis = twistAxis;
++                p.swing1Axis = swing1Axis;
++                p.swing2Axis = swing2Axis;
++                p.joint = joint;
++                p.local2joint = q;
++                p.joint2local = Quaternion.Inverse(q);
++                p.mass = rb_attr.Rigidbody.mass;
++                p.transform = rb_attr.transform;
++
++                // weird behaviour but it's correct
++                p.lowerLimit[0] = -joint.highTwistLimit.limit;
++                p.upperLimit[0] = -joint.lowTwistLimit.limit;
++
++                // back to normal
++                p.lowerLimit[1] = -joint.swing1Limit.limit;
++                p.upperLimit[1] = joint.swing1Limit.limit;
++                p.lowerLimit[2] = -joint.swing2Limit.limit;
++                p.upperLimit[2] = joint.swing2Limit.limit;
++
++                p.rigidbody = rb_attr.Rigidbody;
++
++                this.pids.Add(p);
++                // Debug.Log("Get joint frame rot " + q);
++            }
++        }
++        public void reset_muscles()
++        {
++            // BaseAgent currentBaseAgent = GameObject.FindObjectOfType<BaseAgent>();
++            if (current_character == null)
++            {
++                current_character = Instantiate(muscle_prefab, new Vector3(myTag, 0, 0), transform.localRotation, this.transform);
++                this.rbAttrs = current_character.gameObject.GetComponentsInChildren<RigidbodyAttr>();
++                foreach (var rb_attr in this.rbAttrs)
++                {
++                    rb_attr.ID = (rb_attr.ID % 1000) + myTag * 1000;
++                }
++                current_character.transform.parent = this.transform;
++                foreach (String observationRigidbodyName in observation_rigidbody_names)
++                {
++                    Debug.Log("Try find " + observationRigidbodyName);
++                    GameObject obj = FindChildByRecursion(this.transform, observationRigidbodyName).gameObject;
++                    if (obj)
++                    {
++                        RigidbodyAttr objRigidbodyAttr = obj.GetComponent<RigidbodyAttr>();
++                        if (objRigidbodyAttr)
++                        {
++                            objRigidbodyAttr.Instance();
++                            //RigidbodyAttr.AddAttr(objRigidbodyAttr);
++                        }
++                    }
++                }
++                //currentBaseAgent.Flush();
++
++                Rigidbody[] rigidbodies = GetComponentsInChildren<Rigidbody>();
++                foreach (Rigidbody rb in rigidbodies)
++                {
++                    // Adjustment for rigid body stability issues.
++                    rb.inertiaTensor *= 20.0f;
++                }
++
++                Transform[] child_transforms = GetComponentsInChildren<Transform>();
++                foreach (var child_transform in child_transforms)
++                {
++                    saved_pos.Add(child_transform.position);
++                    saved_q.Add(child_transform.rotation);
++                }
++#if UNITY_EDITOR
++                this.muscleStimulatorMap = new Dictionary<MuscleTendonUnit, MuscleStimulator>();
++#endif
++
++                // Initialize array of all joint torque calculation result maps.
++                MuscleTendonUnit[] muscles = GetComponentsInChildren<MuscleTendonUnit>();
++
++                this.muscleJointTorquesMap = new Dictionary<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>>();
++
++                foreach (MuscleTendonUnit muscle in muscles)
++                {
++                    // Initialize joint torque calculation result map for the specific muscle.
++                    this.muscleJointTorquesMap[muscle] = new Dictionary<MuscleSegment, Vector3>();
++
++#if UNITY_EDITOR
++                    // Map muscle stimulators to muscles.
++                    MuscleStimulator muscleStimulator = muscle.GetComponent<MuscleStimulator>();
++                    if (muscleStimulator != null)
++                    {
++                        this.muscleStimulatorMap.Add(muscle, muscleStimulator);
++                    }
++#endif
++                }
++            }
++            Transform[] child_transforms_ = GetComponentsInChildren<Transform>();
++            for (int i = 0; i < child_transforms_.Length; i++)
++            {
++                child_transforms_[i].position = saved_pos[i];
++                child_transforms_[i].rotation = saved_q[i];
++            }
++        }
++
++        public void bad_reset_muscles()
++        {
++            // BaseAgent currentBaseAgent = GameObject.FindObjectOfType<BaseAgent>();
++#if UNITY_EDITOR
++            this.muscleStimulatorMap = null;
++#endif
++            this.muscleJointTorquesMap = null;
++            if (current_character != null)
++            {
++                DestroyImmediate(current_character);
++                current_character = null;
++                if (this.rbAttrs != null)
++                {
++                    foreach (var rb_attr in this.rbAttrs)
++                    {
++                        RigidbodyAttr.RemoveAttr(rb_attr);
++                        int total_deleted = 0;
++                        for (int i = RigidbodyAttr.Attrs.Count; i >= 0; i--)
++                        {
++                            bool result = false;
++                            if (rb_attr.ID == RigidbodyAttr.Attrs.Values.ToList()[i].ID)
++                            {
++                                result = RigidbodyAttr.Attrs.Remove(RigidbodyAttr.Attrs.Values.ToList()[i].ID);
++                            }
++
++                            total_deleted += result ? 1 : 0;
++
++                        }
++                        Debug.Log("Successfully Delete " + total_deleted);
++                    }
++                }
++                this.rbAttrs = null;
++            }
++            List<GameObject> books = new List<GameObject>();
++
++
++            current_character = Instantiate(muscle_prefab, new Vector3(myTag, 0, 0), transform.localRotation, this.transform);
++            this.rbAttrs = current_character.gameObject.GetComponentsInChildren<RigidbodyAttr>();
++            foreach (var rb_attr in this.rbAttrs)
++            {
++                rb_attr.ID += myTag * 1000;
++            }
++            current_character.transform.parent = this.transform;
++
++            foreach (String observationRigidbodyName in observation_rigidbody_names)
++            {
++                Debug.Log("Try find " + observationRigidbodyName);
++                GameObject obj = FindChildByRecursion(this.transform, observationRigidbodyName).gameObject;
++                if (obj)
++                {
++                    RigidbodyAttr objRigidbodyAttr = obj.GetComponent<RigidbodyAttr>();
++                    if (objRigidbodyAttr)
++                    {
++                        objRigidbodyAttr.Instance();
++                    }
++                }
++            }
++
++            // currentBaseAgent.Flush();
++            Rigidbody[] rigidbodies = GetComponentsInChildren<Rigidbody>();
++            foreach (Rigidbody rb in rigidbodies)
++            {
+                 // Adjustment for rigid body stability issues.
+                 rb.inertiaTensor *= 20.0f;
+             }
+ 
++#if UNITY_EDITOR
+             this.muscleStimulatorMap = new Dictionary<MuscleTendonUnit, MuscleStimulator>();
++#endif
+ 
+             // Initialize array of all joint torque calculation result maps.
+-            MuscleTendonUnit[] muscles = GameObject.FindObjectsOfType<MuscleTendonUnit>();
++            MuscleTendonUnit[] muscles = GetComponentsInChildren<MuscleTendonUnit>();
++
+             this.muscleJointTorquesMap = new Dictionary<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>>();
+ 
+-            foreach (MuscleTendonUnit muscle in muscles) {
++            foreach (MuscleTendonUnit muscle in muscles)
++            {
+                 // Initialize joint torque calculation result map for the specific muscle.
+                 this.muscleJointTorquesMap[muscle] = new Dictionary<MuscleSegment, Vector3>();
+ 
++#if UNITY_EDITOR
+                 // Map muscle stimulators to muscles.
+                 MuscleStimulator muscleStimulator = muscle.GetComponent<MuscleStimulator>();
+-                if (muscleStimulator != null) {
++                if (muscleStimulator != null)
++                {
+                     this.muscleStimulatorMap.Add(muscle, muscleStimulator);
+                 }
++#endif
++            }
++            // Debug.Log("muscleStimulatorMap" + this.muscleStimulatorMap.Count);
++            // Debug.Log("muscleJointTorquesMap" + this.muscleJointTorquesMap.Count);
++        }
++
++        public bool autoAwake = false;
++
++        void Awake()
++        {
++            if (autoAwake == true)
++            {
++                _awake();
++            }
++        }
++
++        public void _awake()
++        {
++            // observation_rigidbody_names.Add("MuscleController");
++            observation_rigidbody_names.Add("right_wrist");
++            observation_rigidbody_names.Add("right_thumb1");
++            observation_rigidbody_names.Add("right_thumb2");
++            observation_rigidbody_names.Add("right_thumb3");
++            observation_rigidbody_names.Add("right_index1");
++            observation_rigidbody_names.Add("right_index2");
++            observation_rigidbody_names.Add("right_index3");
++            observation_rigidbody_names.Add("right_middle1");
++            observation_rigidbody_names.Add("right_middle2");
++            observation_rigidbody_names.Add("right_middle3");
++            observation_rigidbody_names.Add("right_ring1");
++            observation_rigidbody_names.Add("right_ring2");
++            observation_rigidbody_names.Add("right_ring3");
++            observation_rigidbody_names.Add("right_pinky1");
++            observation_rigidbody_names.Add("right_pinky2");
++            observation_rigidbody_names.Add("right_pinky3");
++
++            // List<float> zero = new float[muscleCount].ToList();
++            reset_muscles();
++            // excite_muscles(zero); // Init muscleJointTorquesMap
++            reset_muscles();
++            reset_muscles();
++            // RFUniverse.Manager.AssetManager.Instance.AddListener("SetMuscles", SetMuscles);
++            // RFUniverse.Manager.AssetManager.Instance.AddListener("SetMuscleReload", SetMuscleReload);
++            this.rbAttrs = GetComponentsInChildren<RigidbodyAttr>();
++            // Debug.Log(rbAttrs.Count());
++            // sort rbAttrs by its ID
++            this.rbAttrs = this.rbAttrs.OrderBy(rb_attr => rb_attr.ID).ToArray();
++            foreach (var rb_attr in this.rbAttrs)
++            {
++                rb_attr.ID = (rb_attr.ID % 1000) + myTag * 1000;
+             }
++            this.Getlocal2joints();
++
++
++#if COLLECT_TORQUE
++            // int numSegments = 0;
++            // foreach (KeyValuePair<MuscleTendonUnit, Dictionary<MuscleSegment, Vector3>> kvp in
++            //         this.muscleJointTorquesMap)
++            // {
++            //     numSegments += kvp.Value.Count;
++            // }
++            // muscleJointTorques = new Vector3[numSegments].ToList();
++            muscleSegmentTorques = new List<Vector3>();
++#endif
++
++
++
++        }
++
++        void FixedUpdate()
++        {
++            //     // a list contains 12 and 13
++            //     List<int> ids = new List<int>();
++            //     ids.Add(12);
++            //     ids.Add(13);
++            //     string debugStr = "";
++            //     for (int i = 0; i < ids.Count; i++)
++            //     {
++            //         int id = ids[i];
++            //         Quaternion localRot = rbAttrs[id].transform.localRotation;
++            //         Quaternion jointRot = localRot * pids[id].local2joint;
++            //         Quaternion jointBias = Quaternion.Inverse(pids[id].local2joint) * jointRot;
++            //         debugStr += jointBias.eulerAngles;
++            //     }
++            //     Debug.Log(debugStr);
+         }
++
+     }
+ }
+\ No newline at end of file
+diff --git Assets/Kinesis/Scripts/Components/MuscleGroup.cs Assets/Kinesis/Scripts/Components/MuscleGroup.cs
+index 0d7c450..2c2e1cc 100755
+--- Assets/Kinesis/Scripts/Components/MuscleGroup.cs
++++ Assets/Kinesis/Scripts/Components/MuscleGroup.cs
+@@ -12,6 +12,7 @@ namespace Kinesis.Components {
+             foreach (MuscleTendonUnit muscle in muscles) {
+                 muscle.RefreshProperties();
+             }
++            Debug.Log(name + muscles.Length);
+         }
+     }
+ }
+\ No newline at end of file
+diff --git Assets/Kinesis/Scripts/Components/MuscleStimulator.cs Assets/Kinesis/Scripts/Components/MuscleStimulator.cs
+index 79832a9..6904450 100755
+--- Assets/Kinesis/Scripts/Components/MuscleStimulator.cs
++++ Assets/Kinesis/Scripts/Components/MuscleStimulator.cs
+@@ -1,37 +1,49 @@
+-﻿using Kinesis.Core;
++﻿#define APPLY_TORQUE
++using Kinesis.Core;
+ using System.Collections.Generic;
+ using UnityEngine;
+ 
+ #if UNITY_EDITOR
+-namespace Kinesis.Components {
++namespace Kinesis.Components
++{
+     /// <summary>
+     /// Component for testing individual muscles from the Unity interface.
+     /// </summary>
+     [RequireComponent(typeof(MuscleTendonUnit))]
+     [DisallowMultipleComponent]
+-    public class MuscleStimulator : MonoBehaviour {
++    public class MuscleStimulator : MonoBehaviour
++    {
+         public const float MinExcitation = 0.0f;
+         public const float MaxExcitation = 1.0f;
+         public bool runFixedUpdate;
+         [Range(MinExcitation, MaxExcitation)]
+         public float excitation;
+         public MuscleTendonUnit muscle;
+-        private Dictionary<MuscleSegment, Vector3> jointTorques;
++        public Dictionary<MuscleSegment, Vector3> jointTorques;
+ 
+-        void Awake() {
++        void Awake()
++        {
+             this.jointTorques = new Dictionary<MuscleSegment, Vector3>();
++
+         }
+ 
+-        void FixedUpdate() {
+-            if (!runFixedUpdate) {
++        void FixedUpdate()
++        {
++            if (!runFixedUpdate)
++            {
+                 return;
+             }
+ 
+-            this.muscle.CalculateJointTorques(this.excitation, ref this.jointTorques);
++        
++            Dictionary<MuscleSegment, Vector3> bullshit = new Dictionary<MuscleSegment, Vector3>();
++            this.muscle.CalculateJointTorques(this.excitation, ref this.jointTorques, ref bullshit);
++#if APPLY_TORQUE
+             MuscleTendonUnit.ApplyJointTorques(this.jointTorques);
++#endif
+         }
+ 
+-        void Reset() {
++        void Reset()
++        {
+             this.muscle = this.gameObject.GetComponent<MuscleTendonUnit>();
+         }
+     }
+diff --git Assets/Kinesis/Scripts/Core/MuscleTendonUnit.cs Assets/Kinesis/Scripts/Core/MuscleTendonUnit.cs
+index 11b1ea5..1fbab4a 100755
+--- Assets/Kinesis/Scripts/Core/MuscleTendonUnit.cs
++++ Assets/Kinesis/Scripts/Core/MuscleTendonUnit.cs
+@@ -1,3 +1,4 @@
++using System;
+ using System.Collections.Generic;
+ using UnityEngine;
+ 
+@@ -76,6 +77,7 @@ namespace Kinesis.Core {
+         [ReadOnly]
+         [Range(MinActivation, MaxActivation)]
+         [Tooltip("Current muscle activation.")]
++        [NonSerialized]
+         public float activation = MinActivation;
+         [Tooltip("Toggle parallel damping element.")]
+         public bool parallelDampingOn = true;
+@@ -157,7 +159,7 @@ namespace Kinesis.Core {
+         /// </summary>
+         [ReadOnly]
+         [SerializeField]
+-        private float normalizedSEEForce;
++        public float normalizedSEEForce;
+ 
+         /// <summary>
+         /// Applies joint torques to target rigid bodies.
+@@ -169,7 +171,10 @@ namespace Kinesis.Core {
+             foreach (KeyValuePair<MuscleSegment, Vector3> kvp in jointTorques) {
+                 Rigidbody targetRb = kvp.Key.jointAnchorBody;
+                 Vector3 jointTorque = kvp.Value;
+-                targetRb.AddTorque(jointTorque);
++                // Debug.Log("Applying joint torque " + jointTorque + " to " + targetRb);
++                // jointTorque = targetRb.transform.InverseTransformVector(jointTorque);
++                targetRb.AddRelativeTorque(jointTorque);
++                // targetRb.AddTorque(jointTorque);
+             }
+         }
+ 
+@@ -505,14 +510,14 @@ namespace Kinesis.Core {
+         /// Mapping between muscle segments and joint torques. The muscle segment is used as a key instead of the joint
+         /// as its wider context provides more convenience and utility.
+         /// </param>
+-        public void CalculateJointTorques(float excitation, ref Dictionary<MuscleSegment, Vector3> jointTorques) {
++        public void CalculateJointTorques(float excitation, ref Dictionary<MuscleSegment, Vector3> jointTorques, ref Dictionary<MuscleSegment, Vector3> normalizedJointTorques) {
+             // Apply muscle excitation and update muscle activation.
+             float activation = this.ActivationDynamics(excitation);
+             this.activation = activation;
+ 
+             float optimalCELength = this.optimalCELength;
+             float seSlackLength = this.seSlackLength;
+-            float maxIsometricForce = this.maxIsometricForce;
++            float maxIsometricForce = this.maxIsometricForce / 10.0f;
+             float maxContractileVelocity = this.maxContractileVelocity;
+             float muscleLength = this.MuscleLength();
+             float prevMuscleLength = this.muscleLength;
+@@ -564,6 +569,7 @@ namespace Kinesis.Core {
+ 
+             // Generate torque for each joint in the muscle.
+             jointTorques.Clear();
++            normalizedJointTorques.Clear();
+             foreach (MuscleSegment currentSegment in this.muscleSegments) {
+                 if (currentSegment.joint == null) {
+                     continue;
+@@ -581,8 +587,12 @@ namespace Kinesis.Core {
+                 Vector3 leverArm = tailPosition - jointPosition;
+                 Vector3 torqueVector = Vector3.Cross(leverArm, forceUnitVector);
+                 Vector3 jointTorque = muscleForce * torqueVector;
++                Vector3 normalizedJointTorque = normalizedSEEForce * torqueVector;
+ 
++                jointTorque = currentSegment.joint.transform.InverseTransformVector(jointTorque);
+                 jointTorques[currentSegment] = jointTorque;
++                normalizedJointTorque = currentSegment.joint.transform.InverseTransformVector(normalizedJointTorque);
++                normalizedJointTorques[currentSegment] = normalizedJointTorque;
+             }
+ 
+             // Cache calculated joint torque results.
+diff --git Assets/Kinesis/Scripts/Library/SingletonMonoBehaviour.cs Assets/Kinesis/Scripts/Library/SingletonMonoBehaviour.cs
+index 433a261..a06dbd3 100755
+--- Assets/Kinesis/Scripts/Library/SingletonMonoBehaviour.cs
++++ Assets/Kinesis/Scripts/Library/SingletonMonoBehaviour.cs
+@@ -1,5 +1,6 @@
+ using UnityEngine;
+ 
++#if UNITY_EDITOR
+ namespace Kinesis {
+     /// <summary>
+     /// Base class for providing singleton behavior to MonoBehaviour objects.
+@@ -29,4 +30,5 @@ namespace Kinesis {
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
++#endif
+\ No newline at end of file
