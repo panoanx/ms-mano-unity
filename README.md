@@ -3,16 +3,16 @@
 > [!IMPORTANT]
 > The documentation is *working in progress*. Please check back later for updates.
 
-MS-MANO simulator is the unity program as described in the CVPR'24 paper [MS-MANO: Enabling Hand Pose Tracking with Biomechanical Constraints](https://ms-mano.robotflow.ai/). The simulator is built upon [RFUniverse](https://github.com/mvig-robotflow/rfuniverse), [Kinesis](https://assetstore.unity.com/packages/tools/physics/kinesis-physical-muscle-model-based-movement-206089) and [SMPL-X](https://smpl-x.is.tue.mpg.de/) body model. As Kinesis is a paid asset, we provide two ways for you to run the simulator:
+MS-MANO simulator is the Unity program described in the CVPR'24 paper [MS-MANO: Enabling Hand Pose Tracking with Biomechanical Constraints](https://ms-mano.robotflow.ai/). The simulator is built upon [RFUniverse](https://github.com/mvig-robotflow/rfuniverse), [Kinesis](https://assetstore.unity.com/packages/tools/physics/kinesis-physical-muscle-model-based-movement-206089) and [SMPL-X](https://smpl-x.is.tue.mpg.de/) body model. As Kinesis is a paid asset, we provide two ways for you to run the simulator:
 1. Purchase Kinesis from Unity Asset Store and import it to the project (you can modify the code in this way), or
-2. Use the pre-built binary in the [release](/releases),
+2. Use the pre-built binary in the [release](https://github.com/panoanx/ms-mano-unity/releases),
 
 We will provide the detailed instructions for both ways in the following sections.
 
 
 ## Installation
 
-### The first way: Purchase Kinesis from Unity Asset Store
+### The First Way: Use the Source Code
 
 #### Operating System
 The unity project is tested on both Linux and Windows.
@@ -79,5 +79,14 @@ After the patch is applied, you can switch back to Unity Editor. You shall see m
 ![](fig/unity_editor_scene_static.png)
 
 > [!NOTE]
-> You can test the muscles to ensure the patch is applied correctly. Open the `PD-skeleton` scene in the `Assets/Scene` folder. Click the `Play` button to run the simulation. In the `Hierarchy` tab, you can find the muscles in `handmodel_variant_1114/smplx-female/Musculature/RightHandGroup`. You can select the muscles in blue (ignore the gray-blue ones), for example, `FDS3_R` and in the `Inspector` tab you shall see a `Muscle Stimulator` component. You can change the `Excitation` value to see the muscle contraction.
+> You can test the muscles to ensure the patch is applied correctly. Open the `PD-skeleton` scene in the `Assets/Scene` folder. Click the `Play` button to run the simulation. In the `Hierarchy` tab, you can find the muscles in `handmodel_variant_1114/smplx-female/Musculature/RightHandGroup`. You can select the muscles (ignore the gray ones), for example, `FDS3_R` and in the `Inspector` tab you shall see a `Muscle Stimulator` component. You can change the `Excitation` value to see the muscle contraction. Refer to the [Kinesis Documentation](https://squeakyspacebar.github.io/kinesis-doc/) for more details.
 > ![](fig/play_fds5_r.png)
+
+#### Run the Simulator
+To run the simulator, click the `Play` button in the Unity Editor. 
+
+You can also build the project to a standalone application by clicking `File - Build and Run`.
+
+
+### The Second Way: Use the Pre-built Binary
+We provide the pre-built binary in the [releases](https://github.com/panoanx/ms-mano-unity/releases). You can download the binary and run it directly.
