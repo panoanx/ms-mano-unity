@@ -1,18 +1,20 @@
-# MS-MANO Simulator (WIP)
+# MS-MANO Simulator 
 
-> [!IMPORTANT]
-> The documentation is *working in progress*. Please check back later for updates.
+MS-MANO simulator is the Unity program described in the CVPR'24 paper [MS-MANO: Enabling Hand Pose Tracking with Biomechanical Constraints](https://ms-mano.robotflow.ai/). 
 
-MS-MANO simulator is the Unity program described in the CVPR'24 paper [MS-MANO: Enabling Hand Pose Tracking with Biomechanical Constraints](https://ms-mano.robotflow.ai/). The simulator is built upon [RFUniverse](https://github.com/mvig-robotflow/rfuniverse), [Kinesis](https://assetstore.unity.com/packages/tools/physics/kinesis-physical-muscle-model-based-movement-206089) and [SMPL-X](https://smpl-x.is.tue.mpg.de/) body model. As Kinesis is a paid asset, we provide two ways for you to run the simulator:
+For other components of the MS-MANO project, please refer to the [project page of MS-MANO](https://ms-mano.robotflow.ai/).
+
+
+The simulator is built upon [RFUniverse](https://github.com/mvig-robotflow/rfuniverse), [Kinesis](https://assetstore.unity.com/packages/tools/physics/kinesis-physical-muscle-model-based-movement-206089) and [SMPL-X](https://smpl-x.is.tue.mpg.de/) body model. As Kinesis is a paid asset, we provide two ways for you to run the simulator:
 1. Purchase Kinesis from Unity Asset Store and import it to the project (you can modify the code in this way), or
-2. Use the pre-built binary in the [release](https://github.com/panoanx/ms-mano-unity/releases),
+2. Use the pre-built binary in the [releases](https://github.com/panoanx/ms-mano-unity/releases),
 
 We will provide the detailed instructions for both ways in the following sections.
 
 
 ## Installation
 
-### The First Way: Use the Source Code
+###  Use Kinesis and the Source Code
 
 #### Operating System
 The unity project is tested on both Linux and Windows.
@@ -85,8 +87,17 @@ After the patch is applied, you can switch back to Unity Editor. You shall see m
 #### Run the Simulator
 To run the simulator, click the `Play` button in the Unity Editor. 
 
-You can also build the project to a standalone application by clicking `File - Build and Run`.
 
-
-### The Second Way: Use the Pre-built Binary
+### Use the Pre-built Binary
 We provide the pre-built binary in the [releases](https://github.com/panoanx/ms-mano-unity/releases). You can download the binary and run it directly.
+
+### Build the Project Yourself
+
+You may modify the code, adjust the model or add new features. To build the project yourself, you can follow the instructions in the [Unity Documentation](https://docs.unity3d.com/Manual/BuildSettings.html).
+
+> [!IMPORTANT]
+> You will have to comment a macro before building. The macro is localed in *Assets/Kinesis/Scripts/Components/MuscleStimulator.cs* at line 1 as `#define APPLY_TORQUE`. This macro controls whether to apply the muscle-stimulator torque (the excitation slider). In builds, the editor components would not function properly, the torques would induce unexpected movements.
+
+> [!TIP]
+> If you are using WSL (Windows Subsystem for Linux), you can execute the `.exe` builds directly in the terminal. The communication is through `tcp://localhost:port` so it works across the WSL and Windows.
+> This is helpful if you are setting up the environment on a WSL.
